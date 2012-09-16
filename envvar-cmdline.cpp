@@ -56,22 +56,22 @@ JNIEXPORT jstring JNICALL Java_org_jvnet_winp_Native_getCmdLineAndEnvVars(
 
 	// obtain PROCESS_BASIC_INFORMATION
 	PROCESS_BASIC_INFORMATION ProcInfo;
-	SIZE_T _;
-	if(!NT_SUCCESS(ZwQueryInformationProcess(hProcess, ProcessBasicInformation, &ProcInfo, sizeof(ProcInfo), &_))) {
+	SIZE_T sRead;
+	if(!NT_SUCCESS(ZwQueryInformationProcess(hProcess, ProcessBasicInformation, &ProcInfo, sizeof(ProcInfo), &sRead))) {
 		reportError(pEnv,"Failed to ZWQueryInformationProcess");
 		return NULL;
 	}
 
 	// from there to PEB
 	PEB ProcPEB;
-	if(!ReadProcessMemory(hProcess, ProcInfo.PebBaseAddress, &ProcPEB, sizeof(ProcPEB), &_)) {
+	if(!ReadProcessMemory(hProcess, ProcInfo.PebBaseAddress, &ProcPEB, sizeof(ProcPEB), &sRead)) {
 		reportError(pEnv,"Failed to read PEB");
 		return NULL;
 	}
 
 	// then to INFOBLOCK
 	RTL_USER_PROCESS_PARAMETERS ProcBlock;
-	if(!ReadProcessMemory(hProcess, ProcPEB.dwInfoBlockAddress, &ProcBlock, sizeof(ProcBlock), &_)) {
+	if(!ReadProcessMemory(hProcess, ProcPEB.dwInfoBlockAddress, &ProcBlock, sizeof(ProcBlock), &sRead)) {
 		reportError(pEnv,"Failed to read RT_USER_PROCESS_PARAMETERS");
 		return NULL;
 	}
@@ -83,12 +83,12 @@ JNIEXPORT jstring JNICALL Java_org_jvnet_winp_Native_getCmdLineAndEnvVars(
 		return NULL;
 	}
 
-	if(!ReadProcessMemory(hProcess, ProcBlock.dwCmdLineAddress, pszCmdLine, ProcBlock.wLength, &_)) {
+	if(!ReadProcessMemory(hProcess, ProcBlock.dwCmdLineAddress, pszCmdLine, ProcBlock.wLength, &sRead)) {
 		// on some processes, I noticed that the value of dwCmdLineAddress doesn't have 0x20000 bias
 		// that seem to be there for any other processes. This results in err=299.
 		// so retry with this address.
 		ProcBlock._dwCmdLineAddress |= 0x20000;
-		if(!ReadProcessMemory(hProcess, ProcBlock.dwCmdLineAddress, pszCmdLine, ProcBlock.wLength, &_)) {
+		if(!ReadProcessMemory(hProcess, ProcBlock.dwCmdLineAddress, pszCmdLine, ProcBlock.wLength, &sRead)) {
 			reportError(pEnv,"Failed to read command line arguments");
 			return NULL;
 		}
@@ -110,12 +110,14 @@ JNIEXPORT jstring JNICALL Java_org_jvnet_winp_Native_getCmdLineAndEnvVars(
 	}
 	lstrcpy(buf,pszCmdLine);
 
-	if(!ReadProcessMemory(hProcess, ProcBlock.env, buf+cmdLineLen+1, envSize, &_)) {
+	ReadProcessMemory(hProcess, ProcBlock.env, buf+cmdLineLen+1, envSize, &sRead);
+	if (!sRead)
+	{
 		reportError(pEnv,"Failed to read environment variable table");
 		return NULL;
 	}
 
-	jstring packedStr = pEnv->NewString((jchar*)(LPWSTR)buf,cmdLineLen+1+jsize(envSize)/2);
+	jstring packedStr = pEnv->NewString((jchar*)(LPWSTR)buf,cmdLineLen+1+jsize(sRead)/2);
 
 	return packedStr;
 }
