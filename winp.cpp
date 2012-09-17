@@ -2,10 +2,6 @@
 //
 
 #include "stdafx.h"
-
-#include <algorithm>
-#include <deque>
-
 #include "winp.h"
 #include "auto_handle.h"
 
@@ -20,7 +16,7 @@
 //  Returns:
 //	  TRUE, if successful, FALSE - otherwise.
 //
-BOOL WINAPI KillProcess(DWORD dwProcessId)
+DWORD WINAPI KillProcess(DWORD dwProcessId)
 {
 	// first try to obtain handle to the process without the use of any
 	// additional privileges
@@ -28,11 +24,11 @@ BOOL WINAPI KillProcess(DWORD dwProcessId)
 	if (hProcess && TerminateProcess(hProcess, (UINT)-1))
 	{
 		// completed successfully
-		return TRUE;
+		return ERROR_SUCCESS;
 	}
 
 	// either the process could not be opened or it could not be terminated
-	return FALSE;
+	return GetLastError();
 }
 
 
@@ -119,7 +115,7 @@ typedef struct _SYSTEM_PROCESSES
 //  Returns:
 //	  Win32 error code.
 //
-BOOL WINAPI KillProcessTreeNtHelper(PSYSTEM_PROCESSES pInfo, DWORD dwProcessId)
+DWORD WINAPI KillProcessTreeNtHelper(PSYSTEM_PROCESSES pInfo, DWORD dwProcessId)
 {
 	_ASSERTE(pInfo != NULL);
 
@@ -151,6 +147,39 @@ BOOL WINAPI KillProcessTreeNtHelper(PSYSTEM_PROCESSES pInfo, DWORD dwProcessId)
 	return ERROR_SUCCESS;
 }
 
+struct _TREE_PROCESS;
+typedef _TREE_PROCESS TREE_PROCESS;
+typedef _TREE_PROCESS *PTREE_PROCESS;
+
+struct _TREE_PROCESS
+{
+	DWORD processId;
+	PTREE_PROCESS next;
+	PTREE_PROCESS previous;
+};
+
+//---------------------------------------------------------------------------
+// FreeProcessList
+//
+//  Frees the heap memory allocated for all TREE_PROCESS entries in the list
+//  starting from the provided root element.
+//
+// Parameters:
+//  hHeap - the handle to the heap from which the elements were allocated
+//  root  - the first element in the list to free
+//
+void WINAPI FreeProcessList(HANDLE hHeap, PTREE_PROCESS root)
+{
+	while (root)
+	{
+		PTREE_PROCESS temp = root;
+
+		root = root->next;
+
+		HeapFree(hHeap, 0, temp);
+	}
+}
+
 //---------------------------------------------------------------------------
 // KillProcessTreeWinHelper
 //
@@ -178,7 +207,7 @@ BOOL WINAPI KillProcessTreeNtHelper(PSYSTEM_PROCESSES pInfo, DWORD dwProcessId)
 //  Returns:
 //	  Win32 error code.
 //
-BOOL WINAPI KillProcessTreeWinHelper(DWORD dwProcessId)
+DWORD WINAPI KillProcessTreeWinHelper(DWORD dwProcessId)
 {
 	// first, open a handle to the process with sufficient access to query for
 	// its times. those are needed in order to filter "children" because Windows
@@ -221,32 +250,52 @@ BOOL WINAPI KillProcessTreeWinHelper(DWORD dwProcessId)
 	PROCESSENTRY32 pEntry;
 	pEntry.dwSize = sizeof(PROCESSENTRY32);
 
-	std::deque<DWORD> toProcess;
-	toProcess.push_back(dwProcessId);
-	std::deque<DWORD> toKill;
+	HANDLE hHeap = GetProcessHeap();
+	if (!hHeap)
+	{
+		return KillProcess(dwProcessId);
+	}
+
+	PTREE_PROCESS root = (PTREE_PROCESS) HeapAlloc(hHeap, HEAP_ZERO_MEMORY, sizeof(TREE_PROCESS));
+	if (!root)
+	{
+		// couldn't allocate memory for the TREE_PROCESS, which means we won't be able
+		// to build the list; just kill the root process and leave it at that
+		return KillProcess(dwProcessId);
+	}
+	root->processId = dwProcessId;
+
+	PTREE_PROCESS current = root;
+	PTREE_PROCESS last = root;
 
 	FILETIME creationTime; // used when getting a child's creation time
 	DWORD processId;       // holds the ID of the being-processed process
-	while (!toProcess.empty())
+	while (current)
 	{
-		processId = toProcess.front();
-		toProcess.pop_front();
+		// extract the process ID for processing, but do not move the current pointer;
+		// since children have not been processed yet, current->next may not have been
+		// set at this time. move it after the loop instead
+		processId = current->processId;
 
 		if (!Process32First(hSnapshot, &pEntry))
 		{
-			return GetLastError();
+			DWORD error = GetLastError(); // might be overwritten by HeapFree
+			FreeProcessList(hHeap, root);
+
+			return error;
 		}
 
 		// find the children for the current process
 		do
 		{
+			DWORD pid = pEntry.th32ProcessID;
+			DWORD ppid = pEntry.th32ParentProcessID;
+
 			// first checks are the simplest; we can perform them with the data from
 			// the PROCESSENTRY32 structure:
 			// 1. does the process have a parent?
 			// 2. is the process the one we're currently checking?
-			// 3. does the process's parent not match the one we're checking?
-			DWORD pid = pEntry.th32ProcessID;
-			DWORD ppid = pEntry.th32ParentProcessID;
+			// 3. does the process's parent match the one we're checking?
 			if (ppid == 0 || processId == pid || ppid != processId)
 			{
 				// if any of the checks "fail", then this process is not a candidate
@@ -267,19 +316,44 @@ BOOL WINAPI KillProcessTreeWinHelper(DWORD dwProcessId)
 				// if we make it here, it means we were able to open the process,
 				// get its process times and its creation time is after the root
 				// process was created, so this process should be killed too
-				toKill.push_back(pid);
-				toProcess.push_back(pid);
+				PTREE_PROCESS child = (PTREE_PROCESS) HeapAlloc(hHeap, HEAP_ZERO_MEMORY, sizeof(TREE_PROCESS));
+				if (!child)
+				{
+					DWORD error = GetLastError(); // might be overwritten by HeapFree
+					FreeProcessList(hHeap, root);
+
+					return error;
+				}
+				child->previous = last;
+				child->processId = pid;
+
+				last->next = child;
+				last = child;
 			}
 		}
 		while (Process32Next(hSnapshot, &pEntry));
+
+		// after processing all potential children for the current process, move the
+		// pointer forward and process children for the next process in the list
+		current = current->next;
 	}
 
-	// after building the entire hierarchy, kill the processes in reverse order
-	std::for_each(toKill.rbegin(), toKill.rend(), [] (DWORD pid) { KillProcess(pid); });
+	DWORD result;
+	PTREE_PROCESS temp;
 
-	// lastly, kill the root process. the result of killing the root process is
-	// considered to be the result of the overall operation
-	return KillProcess(dwProcessId);
+	// after building the complete list, kill the processes in reverse order. the final
+	// entry in the list, and therefore the last killed, will be the root process
+	while (last)
+	{
+		result = KillProcess(last->processId);
+
+		temp = last;
+		last = last->previous;
+
+		HeapFree(hHeap, 0, temp);
+	}
+
+	return result;
 }
 
 //---------------------------------------------------------------------------
@@ -300,7 +374,7 @@ BOOL WINAPI KillProcessEx(DWORD dwProcessId, BOOL bTree)
 {
 	if (!bTree)
 	{
-		return KillProcess(dwProcessId);
+		return KillProcess(dwProcessId) == ERROR_SUCCESS;
 	}
 
 	OSVERSIONINFO osvi;
