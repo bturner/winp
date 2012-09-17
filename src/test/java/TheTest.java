@@ -20,9 +20,12 @@ public class TheTest {
 
     @Test
     public void testGetCommandLine() {
+        int failed = 0;
+        int total = 0;
         for (WinProcess p : WinProcess.all()) {
             if(p.getPid()<10)   continue;
             try {
+                ++total;
                 System.out.println(p.getPid() + ": " + p.getCommandLine());
             } catch (WinpException e) {
                 // Note: On newer (is it really still "newer" to say Vista and higher? In 2012?) versions of
@@ -30,12 +33,14 @@ public class TheTest {
                 // administrative privileges (and we're not that stupid, are we?), it's bound to run across
                 // some processes in the full list it's not allowed to tinker with, even if we skip past the
                 // first ten. So, if the error code is ERROR_ACCESS_DENIED (see winerror.h), ignore it
+                ++failed;
                 if (e.getWin32ErrorCode() != 5) { //ERROR_ACCESS_DENIED
                     System.out.println("Unexpected failure getting command line for process " + p.getPid() +
                             ": (" + e.getWin32ErrorCode() + ") " + e.getMessage());
                 }
             }
         }
+        System.out.println("Failed to get " + failed + " of " + total + " processes");
     }
 
     @Test(expected = WinpException.class)
