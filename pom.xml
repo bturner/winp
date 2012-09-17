@@ -1,5 +1,4 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
     <parent>
         <groupId>com.atlassian.pom</groupId>
         <artifactId>atlassian-public-pom</artifactId>
@@ -9,7 +8,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>org.jvnet.winp</groupId>
     <artifactId>winp</artifactId>
-    <version>1.17-SNAPSHOT</version>
+    <version>1.17-atlassian1-SNAPSHOT</version>
     <name>winp</name>
     <description>Kill process tree in Windows</description>
 
@@ -49,9 +48,19 @@
     </dependencies>
 
     <distributionManagement>
+        <repository>
+            <id>atlassian-m2-repository</id>
+            <name>Atlassian Public Repository</name>
+            <url>https://maven.atlassian.com/content/repositories/atlassian-public</url>
+        </repository>
         <site>
             <id>github-pages</id>
             <url>gitsite:git@github.com/bturner/${project.artifactId}.git</url>
         </site>
+        <snapshotRepository>
+            <id>atlassian-m2-snapshot-repository</id>
+            <name>Atlassian Public Snapshot Repository</name>
+            <url>https://maven.atlassian.com/content/repositories/atlassian-public-snapshot</url>
+        </snapshotRepository>
     </distributionManagement>
 </project>
